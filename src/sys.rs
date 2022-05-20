@@ -69,96 +69,79 @@ pub const RETRO_MEMORY_RTC: u32 = 1;
 pub const RETRO_MEMORY_SYSTEM_RAM: u32 = 2;
 pub const RETRO_MEMORY_VIDEO_RAM: u32 = 3;
 impl retro_environment {
-    pub const RETRO_ENVIRONMENT_EXPERIMENTAL: retro_environment = retro_environment(65536);
-    pub const RETRO_ENVIRONMENT_PRIVATE: retro_environment = retro_environment(131072);
-    pub const RETRO_ENVIRONMENT_SET_ROTATION: retro_environment = retro_environment(1);
-    pub const RETRO_ENVIRONMENT_GET_OVERSCAN: retro_environment = retro_environment(2);
-    pub const RETRO_ENVIRONMENT_GET_CAN_DUPE: retro_environment = retro_environment(3);
-    pub const RETRO_ENVIRONMENT_SET_MESSAGE: retro_environment = retro_environment(6);
-    pub const RETRO_ENVIRONMENT_SHUTDOWN: retro_environment = retro_environment(7);
-    pub const RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL: retro_environment = retro_environment(8);
-    pub const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: retro_environment = retro_environment(9);
-    pub const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: retro_environment = retro_environment(10);
-    pub const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: retro_environment = retro_environment(11);
-    pub const RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: retro_environment = retro_environment(12);
-    pub const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: retro_environment =
-        retro_environment(13);
-    pub const RETRO_ENVIRONMENT_SET_HW_RENDER: retro_environment = retro_environment(14);
-    pub const RETRO_ENVIRONMENT_GET_VARIABLE: retro_environment = retro_environment(15);
-    pub const RETRO_ENVIRONMENT_SET_VARIABLES: retro_environment = retro_environment(16);
-    pub const RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: retro_environment = retro_environment(17);
-    pub const RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME: retro_environment = retro_environment(18);
-    pub const RETRO_ENVIRONMENT_GET_LIBRETRO_PATH: retro_environment = retro_environment(19);
-    pub const RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK: retro_environment = retro_environment(21);
-    pub const RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK: retro_environment = retro_environment(22);
-    pub const RETRO_ENVIRONMENT_GET_RUMBLE_INTERFACE: retro_environment = retro_environment(23);
-    pub const RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES: retro_environment =
-        retro_environment(24);
-    pub const RETRO_ENVIRONMENT_GET_SENSOR_INTERFACE: retro_environment = retro_environment(65561);
-    pub const RETRO_ENVIRONMENT_GET_CAMERA_INTERFACE: retro_environment = retro_environment(65562);
-    pub const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: retro_environment = retro_environment(27);
-    pub const RETRO_ENVIRONMENT_GET_PERF_INTERFACE: retro_environment = retro_environment(28);
-    pub const RETRO_ENVIRONMENT_GET_LOCATION_INTERFACE: retro_environment = retro_environment(29);
-    pub const RETRO_ENVIRONMENT_GET_CONTENT_DIRECTORY: retro_environment = retro_environment(30);
-    pub const RETRO_ENVIRONMENT_GET_CORE_ASSETS_DIRECTORY: retro_environment =
-        retro_environment(30);
-    pub const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: retro_environment = retro_environment(31);
-    pub const RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: retro_environment = retro_environment(32);
-    pub const RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK: retro_environment =
-        retro_environment(33);
-    pub const RETRO_ENVIRONMENT_SET_SUBSYSTEM_INFO: retro_environment = retro_environment(34);
-    pub const RETRO_ENVIRONMENT_SET_CONTROLLER_INFO: retro_environment = retro_environment(35);
-    pub const RETRO_ENVIRONMENT_SET_MEMORY_MAPS: retro_environment = retro_environment(65572);
-    pub const RETRO_ENVIRONMENT_SET_GEOMETRY: retro_environment = retro_environment(37);
-    pub const RETRO_ENVIRONMENT_GET_USERNAME: retro_environment = retro_environment(38);
-    pub const RETRO_ENVIRONMENT_GET_LANGUAGE: retro_environment = retro_environment(39);
-    pub const RETRO_ENVIRONMENT_GET_CURRENT_SOFTWARE_FRAMEBUFFER: retro_environment =
-        retro_environment(65576);
-    pub const RETRO_ENVIRONMENT_GET_HW_RENDER_INTERFACE: retro_environment =
-        retro_environment(65577);
-    pub const RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS: retro_environment =
-        retro_environment(65578);
-    pub const RETRO_ENVIRONMENT_SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: retro_environment =
+    pub const EXPERIMENTAL: retro_environment = retro_environment(65536);
+    pub const PRIVATE: retro_environment = retro_environment(131072);
+    pub const SET_ROTATION: retro_environment = retro_environment(1);
+    pub const GET_OVERSCAN: retro_environment = retro_environment(2);
+    pub const GET_CAN_DUPE: retro_environment = retro_environment(3);
+    pub const SET_MESSAGE: retro_environment = retro_environment(6);
+    pub const SHUTDOWN: retro_environment = retro_environment(7);
+    pub const SET_PERFORMANCE_LEVEL: retro_environment = retro_environment(8);
+    pub const GET_SYSTEM_DIRECTORY: retro_environment = retro_environment(9);
+    pub const SET_PIXEL_FORMAT: retro_environment = retro_environment(10);
+    pub const SET_INPUT_DESCRIPTORS: retro_environment = retro_environment(11);
+    pub const SET_KEYBOARD_CALLBACK: retro_environment = retro_environment(12);
+    pub const SET_DISK_CONTROL_INTERFACE: retro_environment = retro_environment(13);
+    pub const SET_HW_RENDER: retro_environment = retro_environment(14);
+    pub const GET_VARIABLE: retro_environment = retro_environment(15);
+    pub const SET_VARIABLES: retro_environment = retro_environment(16);
+    pub const GET_VARIABLE_UPDATE: retro_environment = retro_environment(17);
+    pub const SET_SUPPORT_NO_GAME: retro_environment = retro_environment(18);
+    pub const GET_LIBRETRO_PATH: retro_environment = retro_environment(19);
+    pub const SET_FRAME_TIME_CALLBACK: retro_environment = retro_environment(21);
+    pub const SET_AUDIO_CALLBACK: retro_environment = retro_environment(22);
+    pub const GET_RUMBLE_INTERFACE: retro_environment = retro_environment(23);
+    pub const GET_INPUT_DEVICE_CAPABILITIES: retro_environment = retro_environment(24);
+    pub const GET_SENSOR_INTERFACE: retro_environment = retro_environment(65561);
+    pub const GET_CAMERA_INTERFACE: retro_environment = retro_environment(65562);
+    pub const GET_LOG_INTERFACE: retro_environment = retro_environment(27);
+    pub const GET_PERF_INTERFACE: retro_environment = retro_environment(28);
+    pub const GET_LOCATION_INTERFACE: retro_environment = retro_environment(29);
+    pub const GET_CONTENT_DIRECTORY: retro_environment = retro_environment(30);
+    pub const GET_CORE_ASSETS_DIRECTORY: retro_environment = retro_environment(30);
+    pub const GET_SAVE_DIRECTORY: retro_environment = retro_environment(31);
+    pub const SET_SYSTEM_AV_INFO: retro_environment = retro_environment(32);
+    pub const SET_PROC_ADDRESS_CALLBACK: retro_environment = retro_environment(33);
+    pub const SET_SUBSYSTEM_INFO: retro_environment = retro_environment(34);
+    pub const SET_CONTROLLER_INFO: retro_environment = retro_environment(35);
+    pub const SET_MEMORY_MAPS: retro_environment = retro_environment(65572);
+    pub const SET_GEOMETRY: retro_environment = retro_environment(37);
+    pub const GET_USERNAME: retro_environment = retro_environment(38);
+    pub const GET_LANGUAGE: retro_environment = retro_environment(39);
+    pub const GET_CURRENT_SOFTWARE_FRAMEBUFFER: retro_environment = retro_environment(65576);
+    pub const GET_HW_RENDER_INTERFACE: retro_environment = retro_environment(65577);
+    pub const SET_SUPPORT_ACHIEVEMENTS: retro_environment = retro_environment(65578);
+    pub const SET_HW_RENDER_CONTEXT_NEGOTIATION_INTERFACE: retro_environment =
         retro_environment(65579);
-    pub const RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS: retro_environment = retro_environment(44);
-    pub const RETRO_ENVIRONMENT_SET_HW_SHARED_CONTEXT: retro_environment = retro_environment(65580);
-    pub const RETRO_ENVIRONMENT_GET_VFS_INTERFACE: retro_environment = retro_environment(65581);
-    pub const RETRO_ENVIRONMENT_GET_LED_INTERFACE: retro_environment = retro_environment(65582);
-    pub const RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: retro_environment =
-        retro_environment(65583);
-    pub const RETRO_ENVIRONMENT_GET_MIDI_INTERFACE: retro_environment = retro_environment(65584);
-    pub const RETRO_ENVIRONMENT_GET_FASTFORWARDING: retro_environment = retro_environment(65585);
-    pub const RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE: retro_environment =
-        retro_environment(65586);
-    pub const RETRO_ENVIRONMENT_GET_INPUT_BITMASKS: retro_environment = retro_environment(65587);
-    pub const RETRO_ENVIRONMENT_GET_CORE_OPTIONS_VERSION: retro_environment = retro_environment(52);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS: retro_environment = retro_environment(53);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_INTL: retro_environment = retro_environment(54);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: retro_environment = retro_environment(55);
-    pub const RETRO_ENVIRONMENT_GET_PREFERRED_HW_RENDER: retro_environment = retro_environment(56);
-    pub const RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION: retro_environment =
-        retro_environment(57);
-    pub const RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: retro_environment =
-        retro_environment(58);
-    pub const RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION: retro_environment =
-        retro_environment(59);
-    pub const RETRO_ENVIRONMENT_SET_MESSAGE_EXT: retro_environment = retro_environment(60);
-    pub const RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS: retro_environment = retro_environment(61);
-    pub const RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: retro_environment =
-        retro_environment(62);
-    pub const RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY: retro_environment =
-        retro_environment(63);
-    pub const RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE: retro_environment =
-        retro_environment(64);
-    pub const RETRO_ENVIRONMENT_SET_CONTENT_INFO_OVERRIDE: retro_environment =
-        retro_environment(65);
-    pub const RETRO_ENVIRONMENT_GET_GAME_INFO_EXT: retro_environment = retro_environment(66);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2: retro_environment = retro_environment(67);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_V2_INTL: retro_environment = retro_environment(68);
-    pub const RETRO_ENVIRONMENT_SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK: retro_environment =
-        retro_environment(69);
-    pub const RETRO_ENVIRONMENT_SET_VARIABLE: retro_environment = retro_environment(70);
-    pub const RETRO_ENVIRONMENT_GET_THROTTLE_STATE: retro_environment = retro_environment(65607);
+    pub const SET_SERIALIZATION_QUIRKS: retro_environment = retro_environment(44);
+    pub const SET_HW_SHARED_CONTEXT: retro_environment = retro_environment(65580);
+    pub const GET_VFS_INTERFACE: retro_environment = retro_environment(65581);
+    pub const GET_LED_INTERFACE: retro_environment = retro_environment(65582);
+    pub const GET_AUDIO_VIDEO_ENABLE: retro_environment = retro_environment(65583);
+    pub const GET_MIDI_INTERFACE: retro_environment = retro_environment(65584);
+    pub const GET_FASTFORWARDING: retro_environment = retro_environment(65585);
+    pub const GET_TARGET_REFRESH_RATE: retro_environment = retro_environment(65586);
+    pub const GET_INPUT_BITMASKS: retro_environment = retro_environment(65587);
+    pub const GET_CORE_OPTIONS_VERSION: retro_environment = retro_environment(52);
+    pub const SET_CORE_OPTIONS: retro_environment = retro_environment(53);
+    pub const SET_CORE_OPTIONS_INTL: retro_environment = retro_environment(54);
+    pub const SET_CORE_OPTIONS_DISPLAY: retro_environment = retro_environment(55);
+    pub const GET_PREFERRED_HW_RENDER: retro_environment = retro_environment(56);
+    pub const GET_DISK_CONTROL_INTERFACE_VERSION: retro_environment = retro_environment(57);
+    pub const SET_DISK_CONTROL_EXT_INTERFACE: retro_environment = retro_environment(58);
+    pub const GET_MESSAGE_INTERFACE_VERSION: retro_environment = retro_environment(59);
+    pub const SET_MESSAGE_EXT: retro_environment = retro_environment(60);
+    pub const GET_INPUT_MAX_USERS: retro_environment = retro_environment(61);
+    pub const SET_AUDIO_BUFFER_STATUS_CALLBACK: retro_environment = retro_environment(62);
+    pub const SET_MINIMUM_AUDIO_LATENCY: retro_environment = retro_environment(63);
+    pub const SET_FASTFORWARDING_OVERRIDE: retro_environment = retro_environment(64);
+    pub const SET_CONTENT_INFO_OVERRIDE: retro_environment = retro_environment(65);
+    pub const GET_GAME_INFO_EXT: retro_environment = retro_environment(66);
+    pub const SET_CORE_OPTIONS_V2: retro_environment = retro_environment(67);
+    pub const SET_CORE_OPTIONS_V2_INTL: retro_environment = retro_environment(68);
+    pub const SET_CORE_OPTIONS_UPDATE_DISPLAY_CALLBACK: retro_environment = retro_environment(69);
+    pub const SET_VARIABLE: retro_environment = retro_environment(70);
+    pub const GET_THROTTLE_STATE: retro_environment = retro_environment(65607);
 }
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
@@ -1006,10 +989,10 @@ pub struct retro_disk_control_ext_callback {
 #[non_exhaustive]
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum retro_pixel_format {
-    RETRO_PIXEL_FORMAT_0RGB1555 = 0,
-    RETRO_PIXEL_FORMAT_XRGB8888 = 1,
-    RETRO_PIXEL_FORMAT_RGB565 = 2,
-    RETRO_PIXEL_FORMAT_UNKNOWN = 2147483647,
+    _0RGB1555 = 0,
+    _XRGB8888 = 1,
+    _RGB565 = 2,
+    _UNKNOWN = 2147483647,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
