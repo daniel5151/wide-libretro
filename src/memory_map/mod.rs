@@ -61,10 +61,11 @@ pub struct MemoryMap {
 }
 
 impl MemoryMap {
-    pub unsafe fn from_retro_memory_map(map: *const retro_memory_map) -> MemoryMap {
-        let descriptors = unsafe {
-            std::slice::from_raw_parts((*map).descriptors, (*map).num_descriptors as usize)
-        };
+    pub fn from_retro_memory_map(map: &retro_memory_map) -> MemoryMap {
+        assert!(!map.descriptors.is_null());
+
+        let descriptors =
+            unsafe { std::slice::from_raw_parts(map.descriptors, map.num_descriptors as usize) };
 
         let descriptors = descriptors
             .iter()

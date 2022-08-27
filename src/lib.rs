@@ -118,13 +118,13 @@ unsafe extern "C" fn retro_get_system_av_info(info: *mut retro_system_av_info) {
 }
 
 /// Container for any callbacks the frontend hands the core.
-struct CoreCallbacks {
+struct LibretroCallbacks {
     env: retro_environment_t,
     video: retro_video_refresh_t,
 }
 
-static LIBRETRO_CALLBACKS: Lazy<Mutex<CoreCallbacks>> = Lazy::new(|| {
-    Mutex::new(CoreCallbacks {
+static LIBRETRO_CALLBACKS: Lazy<Mutex<LibretroCallbacks>> = Lazy::new(|| {
+    Mutex::new(LibretroCallbacks {
         env: None,
         video: None,
     })
@@ -235,7 +235,7 @@ fn retro_video_refresh_shim_rs(
         fb.resize(SCREEN_WIDTH * SCREEN_HEIGHT * 4, 0);
         // test pattern
         for (i, b) in fb.iter_mut().enumerate() {
-            *b = i as u8;
+            *b = (2 * i) as u8;
         }
     }
 
@@ -271,50 +271,124 @@ static CORE_STATE: Lazy<Mutex<CoreState>> = Lazy::new(|| {
     })
 });
 
-unsafe extern "C" fn retro_environment_shim(cmd: u32, data: *mut ::std::os::raw::c_void) -> bool {
-    let ret;
+use env_ffi_helpers::*;
+mod env_ffi_helpers {
+    use std::ffi::c_void;
 
-    // helper to simplify base-case of passing through commands
-    macro_rules! invoke_env_cb {
-        () => {
-            ret = unsafe { (LIBRETRO_CALLBACKS.lock().env.unwrap())(cmd, data) }
-        };
+    pub struct EnvCallbackArgs(u32, *mut c_void);
+
+    impl EnvCallbackArgs {
+        pub fn new(cmd: u32, ptr: *mut c_void) -> EnvCallbackArgs {
+            EnvCallbackArgs(cmd, ptr)
+        }
+
+        pub fn cmd(&self) -> u32 {
+            self.0
+        }
+
+        pub unsafe fn into_mut<'a, T>(self) -> &'a mut T {
+            unsafe { self.1.cast::<T>().as_mut().unwrap() }
+        }
+
+        pub unsafe fn into_ref<'a, T>(self) -> &'a T {
+            unsafe { self.1.cast::<T>().as_ref().unwrap() }
+        }
     }
 
+    pub struct UnsupportedEnvCmd;
+
+    pub struct EnvCallback(unsafe extern "C" fn(u32, *mut c_void) -> bool);
+
+    impl EnvCallback {
+        pub fn new(f: unsafe extern "C" fn(u32, *mut c_void) -> bool) -> EnvCallback {
+            EnvCallback(f)
+        }
+
+        pub unsafe fn get<T>(&self, data: EnvCallbackArgs) -> Result<&T, UnsupportedEnvCmd> {
+            unsafe { self.get_nullable(data).map(Option::unwrap) }
+        }
+
+        pub unsafe fn get_nullable<T>(
+            &self,
+            data: EnvCallbackArgs,
+        ) -> Result<Option<&T>, UnsupportedEnvCmd> {
+            let is_supported = unsafe { (self.0)(data.0, data.1) };
+            is_supported
+                .then(|| unsafe { (data.1 as *mut T).as_ref() })
+                .ok_or(UnsupportedEnvCmd)
+        }
+
+        pub unsafe fn set<T>(&self, cmd: u32, data: &T) -> Result<(), UnsupportedEnvCmd> {
+            unsafe { self.set_nullable(cmd, Some(data)) }
+        }
+
+        pub unsafe fn set_nullable<T>(
+            &self,
+            cmd: u32,
+            data: Option<&T>,
+        ) -> Result<(), UnsupportedEnvCmd> {
+            let ptr = match data {
+                Some(data) => data as *const T as *mut c_void,
+                None => std::ptr::null_mut(),
+            };
+            let is_supported = unsafe { (self.0)(cmd, ptr) };
+            is_supported.then(|| ()).ok_or(UnsupportedEnvCmd)
+        }
+
+        pub fn passthrough(&self, data: EnvCallbackArgs) -> Result<(), UnsupportedEnvCmd> {
+            // SAFETY: using original data + cmd provided by underlying core
+            let is_supported = unsafe { (self.0)(data.0, data.1) };
+            is_supported.then(|| ()).ok_or(UnsupportedEnvCmd)
+        }
+    }
+}
+
+unsafe extern "C" fn retro_environment_shim(cmd: u32, data: *mut c_void) -> bool {
+    let env_cb = EnvCallback::new(LIBRETRO_CALLBACKS.lock().env.unwrap());
+    retro_environment_shim_rs(env_cb, EnvCallbackArgs::new(cmd, data)).is_ok()
+}
+
+fn retro_environment_shim_rs(
+    env_cb: EnvCallback,
+    data: EnvCallbackArgs,
+) -> Result<(), UnsupportedEnvCmd> {
+    let cmd = data.cmd();
     match retro_environment(cmd) {
         // ==== Libretro harness ==== //
         retro_environment::GET_LOG_INTERFACE => {
-            invoke_env_cb!();
+            let _ = unsafe { env_cb.get::<retro_log_callback>(data)? };
+            // TODO: hook into libretro logger
             log::info!("intercepted env:GET_LOG_INTERFACE");
+            Ok(())
         }
 
         // ==== Memory Map //
         retro_environment::SET_MEMORY_MAPS => {
-            let map = data as *const retro_memory_map;
-            let memory_map = unsafe { memory_map::MemoryMap::from_retro_memory_map(map) };
+            let map = unsafe { data.into_mut::<retro_memory_map>() };
 
+            let memory_map = memory_map::MemoryMap::from_retro_memory_map(map);
             log::info!("intercepted env:SET_MEMORY_MAPS: {:#?}", memory_map);
-
             CORE_STATE.lock().memory_map = Some(memory_map);
 
             // pass things along...
-            invoke_env_cb!();
+            unsafe { env_cb.set(cmd, map) }
         }
 
         // ==== Audio ==== //
         retro_environment::SET_AUDIO_BUFFER_STATUS_CALLBACK => {
             log::info!("intercepted env:SET_AUDIO_BUFFER_STATUS_CALLBACK");
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
         retro_environment::SET_MINIMUM_AUDIO_LATENCY => {
             log::info!("intercepted env:SET_MINIMUM_AUDIO_LATENCY");
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
 
         // ==== Video ==== //
         retro_environment::SET_PIXEL_FORMAT => {
-            let pixel_format = data as *mut i32;
-            let pixel_format_orig = match unsafe { *pixel_format } {
+            let pixel_format = unsafe { data.into_mut::<i32>() };
+
+            let pixel_format_orig = match pixel_format {
                 0 => retro_pixel_format::_0RGB1555,
                 1 => retro_pixel_format::_XRGB8888,
                 2 => retro_pixel_format::_RGB565,
@@ -324,37 +398,37 @@ unsafe extern "C" fn retro_environment_shim(cmd: u32, data: *mut ::std::os::raw:
             CORE_STATE.lock().pixel_format = Some(pixel_format_orig);
 
             // normalize underlying framebuffers to use XRGB8888
-            unsafe { *pixel_format = retro_pixel_format::_XRGB8888 as i32 };
+            *pixel_format = retro_pixel_format::_XRGB8888 as i32;
 
-            invoke_env_cb!();
+            unsafe { env_cb.set(cmd, pixel_format) }
         }
 
         // ==== Input ==== //
         retro_environment::GET_INPUT_BITMASKS => {
-            invoke_env_cb!();
+            let _ = unsafe { env_cb.get_nullable::<bool>(data)? };
             log::info!("intercepted env:GET_INPUT_BITMASKS");
+            Ok(())
         }
         retro_environment::SET_INPUT_DESCRIPTORS => {
             log::info!("intercepted env:SET_INPUT_DESCRIPTORS");
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
 
         // ==== Variables ==== //
         retro_environment::GET_CORE_OPTIONS_VERSION => {
-            invoke_env_cb!();
-            let version = data as *const u32;
-            let version = unsafe { *version };
+            let version = unsafe { env_cb.get::<u32>(data)? };
+
             log::info!("intercepted env:GET_CORE_OPTIONS_VERSION: {}", version);
+            Ok(())
         }
         retro_environment::GET_VARIABLE_UPDATE => {
             // _silently_ pass this right on through, to avoid logspam
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
         retro_environment::GET_VARIABLE => {
             // call the callback to get the data, then inspect it
-            invoke_env_cb!();
+            let var = unsafe { env_cb.get::<retro_variable>(data)? };
 
-            let var = unsafe { *(data as *const retro_variable) };
             let key = {
                 if !var.key.is_null() {
                     Some(unsafe { std::ffi::CStr::from_ptr(var.key) })
@@ -371,11 +445,14 @@ unsafe extern "C" fn retro_environment_shim(cmd: u32, data: *mut ::std::os::raw:
             };
 
             log::trace!("intercepted env:GET_VARIABLE: {:?}={:?}", key, value);
+            Ok(())
         }
         retro_environment::SET_VARIABLES => {
             let mut vars: Vec<(String, String)> = Vec::new();
 
-            let mut p = data as *const retro_variable;
+            let first = unsafe { data.into_ref::<retro_variable>() };
+
+            let mut p = first as *const retro_variable;
             loop {
                 let var = unsafe { *p };
                 p = unsafe { p.add(1) };
@@ -394,44 +471,43 @@ unsafe extern "C" fn retro_environment_shim(cmd: u32, data: *mut ::std::os::raw:
             }
 
             log::info!("intercepted env:SET_VARIABLES: {:?}", vars);
-            invoke_env_cb!();
+            unsafe { env_cb.set(cmd, first) }
         }
         retro_environment::SET_CORE_OPTIONS_V2_INTL => {
             log::info!("intercepted env:SET_CORE_OPTIONS_V2_INTL");
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
 
         // ==== Other ==== //
         retro_environment::GET_SYSTEM_DIRECTORY => {
-            invoke_env_cb!();
+            let dir = unsafe { env_cb.get::<*const i8>(data)? };
 
-            let s = data as *mut *const i8;
-            let dir = unsafe { std::ffi::CStr::from_ptr(*s) };
+            let dir = unsafe { std::ffi::CStr::from_ptr(*dir) };
             log::info!("intercepted env:GET_SYSTEM_DIRECTORY: {:?}", dir);
+            Ok(())
         }
         retro_environment::GET_LANGUAGE => {
-            invoke_env_cb!();
+            let _ = unsafe { env_cb.get::<u32>(data)? };
             log::info!("intercepted env:GET_LANGUAGE");
+            Ok(())
         }
         retro_environment::SET_SUPPORT_ACHIEVEMENTS => {
-            let support_achievements = data as *const bool;
-            let support_achievements = unsafe { *support_achievements };
+            let support_achievements = unsafe { data.into_ref::<bool>() };
+
             log::info!(
                 "intercepted env:SET_SUPPORT_ACHIEVEMENTS: {}",
                 support_achievements
             );
 
-            invoke_env_cb!();
+            unsafe { env_cb.set(cmd, support_achievements) }
         }
 
         // pass the rest right on through
         _ => {
             log::warn!("forwarded unknown env:{:?}", retro_environment(cmd));
-            invoke_env_cb!();
+            env_cb.passthrough(data)
         }
-    };
-
-    ret
+    }
 }
 
 #[allow(clippy::missing_safety_doc)]
