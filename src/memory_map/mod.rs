@@ -78,6 +78,7 @@ impl MemoryMap {
     }
 
     pub fn read_u16(&self, addr: usize) -> Option<u16> {
+        assert!(addr == 0x400001E);
         // TODO: actually respect addr lol
         //
         // right now, I'm just hard-coding this to return the BG3VOFS register

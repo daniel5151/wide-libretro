@@ -1,18 +1,58 @@
 #![allow(unused_variables)]
 
+use self::env_ffi_helpers::*;
+use egui::ScrollArea;
+use egui_skia::EguiSkia;
+use egui_skia::EguiSkiaPaintCallback;
+use egui_skia::RasterizeOptions;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use skia_safe::Color;
+use skia_safe::Font;
+use skia_safe::PathEffect;
+use skia_safe::{Paint, Point, Surface};
+use std::ffi::c_void;
+use std::sync::mpsc;
+use std::sync::Arc;
+use sys::*;
 
 #[allow(non_upper_case_globals, non_camel_case_types, dead_code)]
 mod sys;
-use std::ffi::c_void;
-use sys::*;
 
 mod memory_map;
 
+/// Container for all things UI related.
+struct UiState {
+    fb: Arc<Mutex<Vec<u8>>>,
+    ui_send: mpsc::Sender<UiMsg>,
+    ui_recv: Option<mpsc::Receiver<UiMsg>>,
+}
+
+static UI_STATE: Lazy<Mutex<UiState>> = Lazy::new(|| {
+    let (ui_send, ui_recv) = mpsc::channel();
+    Mutex::new(UiState {
+        fb: {
+            let mut fb = Vec::new();
+            fb.resize(SCREEN_WIDTH * SCREEN_HEIGHT * 4, 0);
+            Arc::new(Mutex::new(fb))
+        },
+        ui_send,
+        ui_recv: Some(ui_recv),
+    })
+});
+
 static DYLIB: Lazy<Mutex<libloading::Library>> = Lazy::new(|| {
-    // TODO: move this to a better place? also, integrate with libretro logging?
-    pretty_env_logger::init();
+    // TODO: move this stuff to a better place?
+    {
+        // integrate with libretro logging?
+        pretty_env_logger::init();
+        {
+            let mut ui_state = UI_STATE.lock();
+            let fb = ui_state.fb.clone();
+            let ui_recv = ui_state.ui_recv.take().unwrap();
+            std::thread::spawn(move || ui_thread(fb, ui_recv));
+        }
+    }
 
     let path_to_core = std::env::var("SHIM_CORE").expect("did not find SHIM_CORE");
     let library = unsafe {
@@ -45,7 +85,7 @@ macro_rules! fwd {
 fwd! { fn retro_set_audio_sample(arg1: retro_audio_sample_t); }
 fwd! { fn retro_set_audio_sample_batch(arg1: retro_audio_sample_batch_t); }
 fwd! { fn retro_set_input_poll(arg1: retro_input_poll_t); }
-fwd! { fn retro_set_input_state(arg1: retro_input_state_t); }
+// fwd! { fn retro_set_input_state(arg1: retro_input_state_t); }
 fwd! { fn retro_init(); }
 fwd! { fn retro_deinit(); }
 fwd! { fn retro_api_version() -> u32; }
@@ -66,6 +106,20 @@ fwd! { fn retro_get_region() -> u32; }
 fwd! { fn retro_get_memory_data(id: u32) -> *mut ::std::os::raw::c_void; }
 fwd! { fn retro_get_memory_size(id: u32) -> size_t; }
 // fwd! { fn retro_set_environment(cb: retro_environment_t); }
+
+#[allow(clippy::missing_safety_doc)]
+#[no_mangle]
+pub unsafe extern "C" fn retro_set_input_state(cb: retro_input_state_t) {
+    log::trace!("intercepted retro_set_input_state");
+
+    // stash the callback we are given
+    LIBRETRO_CALLBACKS.lock().input = cb;
+
+    let dylib = DYLIB.lock();
+    let f: libloading::Symbol<'_, unsafe extern "C" fn(arg1: retro_input_state_t) -> ()> =
+        unsafe { dylib.get("retro_set_input_state".as_bytes()).unwrap() };
+    unsafe { (f)(cb) }
+}
 
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
@@ -121,12 +175,14 @@ unsafe extern "C" fn retro_get_system_av_info(info: *mut retro_system_av_info) {
 struct LibretroCallbacks {
     env: retro_environment_t,
     video: retro_video_refresh_t,
+    input: retro_input_state_t,
 }
 
 static LIBRETRO_CALLBACKS: Lazy<Mutex<LibretroCallbacks>> = Lazy::new(|| {
     Mutex::new(LibretroCallbacks {
         env: None,
         video: None,
+        input: None,
     })
 });
 
@@ -224,25 +280,13 @@ fn retro_video_refresh_shim_rs(
         fb
     };
 
-    // for now, use our own framebuffer.
-    //
-    // TODO: look into what kinds of advanced render targets libretro provides?
-    // I really don't want to roll my own drawing primitives on-top of a raw
-    // framebuffer...
-    static WIDE_FRAMEBUFFER: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
-    let mut fb = WIDE_FRAMEBUFFER.lock();
-    if fb.len() != SCREEN_WIDTH * SCREEN_HEIGHT * 4 {
-        fb.resize(SCREEN_WIDTH * SCREEN_HEIGHT * 4, 0);
-        // test pattern
-        for (i, b) in fb.iter_mut().enumerate() {
-            *b = (2 * i) as u8;
-        }
-    }
+    let fb = UI_STATE.lock().fb.clone();
+    let mut fb = fb.lock();
 
     // quick test that copies the original framebuffer into the larger one
     let orig_rows = orig_fb_xrgb_8888.chunks_exact(orig_width * 4);
-    for (dst_row, src_row) in fb.chunks_mut(SCREEN_WIDTH * 4).skip(100).zip(orig_rows) {
-        dst_row[4 * 100..][..orig_width * 4].copy_from_slice(src_row)
+    for (dst_row, src_row) in fb.chunks_mut(SCREEN_WIDTH * 4).skip(200).zip(orig_rows) {
+        dst_row[4 * 200..][..orig_width * 4].copy_from_slice(src_row)
     }
 
     unsafe {
@@ -255,8 +299,8 @@ fn retro_video_refresh_shim_rs(
     }
 }
 
-const SCREEN_WIDTH: usize = 1280;
-const SCREEN_HEIGHT: usize = 720;
+const SCREEN_WIDTH: usize = (1280. * 1.5) as _;
+const SCREEN_HEIGHT: usize = (720. * 1.5) as _;
 
 /// Container for bits of interesting info the core sends up to the frontend.
 struct CoreState {
@@ -271,7 +315,6 @@ static CORE_STATE: Lazy<Mutex<CoreState>> = Lazy::new(|| {
     })
 });
 
-use env_ffi_helpers::*;
 mod env_ffi_helpers {
     use std::ffi::c_void;
 
@@ -520,15 +563,182 @@ pub unsafe extern "C" fn retro_run() {
         unsafe { (f)() };
     }
 
+    let ui_state = UI_STATE.lock();
+    let (done_tx, done_rx) = mpsc::channel();
+    ui_state.ui_send.send(UiMsg::RetroRun(done_tx)).unwrap();
+    done_rx.recv().unwrap();
+
     let core_state = CORE_STATE.lock();
 
-    log::warn!(
-        "BG3VOFS: {}",
-        core_state
-            .memory_map
-            .as_ref()
-            .unwrap()
-            .read_u16(0x1E)
-            .unwrap()
+    let bg3vofs = core_state
+        .memory_map
+        .as_ref()
+        .unwrap()
+        .read_u16(0x400001E)
+        .unwrap();
+    log::warn!("BG3VOFS: {}", bg3vofs);
+}
+
+enum UiMsg {
+    RetroRun(mpsc::Sender<()>),
+}
+
+fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
+    let image_info = skia_safe::ImageInfo::new(
+        (SCREEN_WIDTH as _, SCREEN_HEIGHT as _),
+        skia_safe::ColorType::BGRA8888,
+        skia_safe::AlphaType::Premul,
+        None,
     );
+
+    let RasterizeOptions { pixels_per_point } = None.unwrap_or_default();
+    let mut backend = EguiSkia::new();
+    let mut surface =
+        Surface::new_raster(&image_info, SCREEN_WIDTH * 4, None).expect("Failed to create surface");
+
+    let mut demo = egui_demo_lib::DemoWindows::default();
+
+    let mut last_pointer_pos = egui::pos2(0., 0.);
+    let mut last_pointer_pressed = false;
+    let mut frame = 0;
+
+    loop {
+        let msg = recv.recv().expect("sender won't go away");
+        match msg {
+            UiMsg::RetroRun(done) => {
+                let pointer_x = unsafe {
+                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
+                        0,
+                        sys::RETRO_DEVICE_POINTER,
+                        0,
+                        RETRO_DEVICE_ID_POINTER_X,
+                    )
+                };
+                let pointer_y = unsafe {
+                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
+                        0,
+                        sys::RETRO_DEVICE_POINTER,
+                        0,
+                        RETRO_DEVICE_ID_POINTER_Y,
+                    )
+                };
+                let pointer_pressed = unsafe {
+                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
+                        0,
+                        sys::RETRO_DEVICE_POINTER,
+                        0,
+                        RETRO_DEVICE_ID_POINTER_PRESSED,
+                    )
+                };
+
+                let normalized_x = ((pointer_x as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.)
+                    * SCREEN_WIDTH as f32;
+                let normalized_y = ((pointer_y as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.)
+                    * SCREEN_HEIGHT as f32;
+                let pointer_pos = egui::pos2(normalized_x, normalized_y);
+
+                let mut events = Vec::new();
+
+                if pointer_pos != last_pointer_pos {
+                    last_pointer_pos = pointer_pos;
+
+                    log::info!("pointer_pos: {:?}", pointer_pos);
+
+                    events.push(egui::Event::PointerMoved(pointer_pos));
+                }
+
+                let pointer_pressed = pointer_pressed == 1;
+                if pointer_pressed != last_pointer_pressed {
+                    last_pointer_pressed = pointer_pressed;
+
+                    log::info!("pointer_pressed: {}", pointer_pressed);
+
+                    events.push(egui::Event::PointerButton {
+                        pos: pointer_pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: pointer_pressed,
+                        modifiers: egui::Modifiers {
+                            alt: false,
+                            ctrl: false,
+                            shift: false,
+                            mac_cmd: false,
+                            command: false,
+                        },
+                    })
+                }
+
+                let input = egui::RawInput {
+                    screen_rect: Some(
+                        [
+                            egui::Pos2::default(),
+                            egui::Pos2::new(surface.width() as f32, surface.height() as f32),
+                        ]
+                        .into(),
+                    ),
+                    pixels_per_point: Some(pixels_per_point),
+                    events,
+                    ..Default::default()
+                };
+
+                // TODO: actually use these return values
+                let (_paint_duration, _platform_output) = backend.run(input, |ctx| {
+                    demo.ui(ctx);
+
+                    frame += 1;
+
+                    egui::Window::new("Draw to skia").show(ctx, |ui| {
+                        ScrollArea::horizontal().show(ui, |ui| {
+                            let (rect, _) = ui
+                                .allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
+                            ctx.request_repaint();
+                            let si = (frame as f32 / 120.0).sin();
+
+                            ui.painter().add(egui::PaintCallback {
+                                rect,
+                                callback: Arc::new(EguiSkiaPaintCallback::new(move |canvas| {
+                                    let center = Point::new(150.0, 150.0);
+                                    canvas.save();
+                                    canvas.rotate(si * 5.0, Some(center));
+                                    let mut paint = Paint::default();
+                                    paint.set_color(Color::from_argb(255, 255, 255, 255));
+                                    canvas.draw_str(
+                                        "Hello Skia!",
+                                        Point::new(100.0, 150.0),
+                                        &Font::default().with_size(20.0).unwrap(),
+                                        &paint,
+                                    );
+
+                                    let mut circle_paint = Paint::default();
+                                    circle_paint.set_path_effect(PathEffect::dash(
+                                        &[si.mul_add(5.0, 20.0), si.mul_add(5.0, 20.0)],
+                                        1.0,
+                                    ));
+                                    circle_paint.set_style(skia_safe::PaintStyle::Stroke);
+                                    circle_paint.set_stroke_width(10.0);
+                                    circle_paint.set_stroke_cap(skia_safe::PaintCap::Round);
+                                    circle_paint.set_color(Color::WHITE);
+                                    canvas.draw_circle(center, 100.0, &circle_paint);
+                                })),
+                            })
+                        });
+                    });
+                });
+
+                surface.canvas().clear(Color::TRANSPARENT);
+                backend.paint(&mut surface);
+
+                let mut fb = fb.lock();
+                let ok = surface.image_snapshot().read_pixels(
+                    &image_info,
+                    fb.as_mut_slice(),
+                    SCREEN_WIDTH * 4,
+                    (0, 0),
+                    skia_safe::image::CachingHint::Disallow,
+                );
+                assert!(ok);
+
+                done.send(()).unwrap();
+            }
+        }
+    }
 }
