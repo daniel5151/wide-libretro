@@ -78,13 +78,11 @@ impl MemoryMap {
     }
 
     pub fn read_u16(&self, addr: usize) -> Option<u16> {
-        assert!(addr == 0x400001E);
+        assert!((0x4000000..=0x4000400).contains(&addr));
+        let addr = addr - 0x4000000;
         // TODO: actually respect addr lol
-        //
-        // right now, I'm just hard-coding this to return the BG3VOFS register
-        // from the mGBA core...
         Some(u16::from_le_bytes(
-            self.descriptors[10].buf.unwrap()[0x1E..][..2]
+            self.descriptors[10].buf.unwrap()[addr..][..2]
                 .try_into()
                 .unwrap(),
         ))

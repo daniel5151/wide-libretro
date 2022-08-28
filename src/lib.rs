@@ -4,7 +4,6 @@ use self::env_ffi_helpers::*;
 use egui::ScrollArea;
 use egui_skia::EguiSkia;
 use egui_skia::EguiSkiaPaintCallback;
-use egui_skia::RasterizeOptions;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use skia_safe::Color;
@@ -21,22 +20,36 @@ mod sys;
 
 mod memory_map;
 
+struct EmuFb {
+    fb: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+static EMU_FB: Lazy<Mutex<EmuFb>> = Lazy::new(|| {
+    Mutex::new(EmuFb {
+        fb: Vec::new(),
+        width: 0,
+        height: 0,
+    })
+});
+
 /// Container for all things UI related.
 struct UiState {
-    fb: Arc<Mutex<Vec<u8>>>,
-    ui_send: mpsc::Sender<UiMsg>,
+    ui_fb: Arc<Mutex<Vec<u8>>>,
+    ui_send: Option<mpsc::Sender<UiMsg>>,
     ui_recv: Option<mpsc::Receiver<UiMsg>>,
 }
 
 static UI_STATE: Lazy<Mutex<UiState>> = Lazy::new(|| {
     let (ui_send, ui_recv) = mpsc::channel();
     Mutex::new(UiState {
-        fb: {
+        ui_fb: {
             let mut fb = Vec::new();
             fb.resize(SCREEN_WIDTH * SCREEN_HEIGHT * 4, 0);
             Arc::new(Mutex::new(fb))
         },
-        ui_send,
+        ui_send: Some(ui_send),
         ui_recv: Some(ui_recv),
     })
 });
@@ -48,7 +61,7 @@ static DYLIB: Lazy<Mutex<libloading::Library>> = Lazy::new(|| {
         pretty_env_logger::init();
         {
             let mut ui_state = UI_STATE.lock();
-            let fb = ui_state.fb.clone();
+            let fb = ui_state.ui_fb.clone();
             let ui_recv = ui_state.ui_recv.take().unwrap();
             std::thread::spawn(move || ui_thread(fb, ui_recv));
         }
@@ -249,11 +262,13 @@ fn retro_video_refresh_shim_rs(
     orig_height: usize,
     orig_pitch: usize,
 ) {
-    static ORIG_FRAMEBUFFER_XRGB8888: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
+    let mut emu_fb = EMU_FB.lock();
+    emu_fb.width = orig_width;
+    emu_fb.height = orig_height;
 
     // normalize original framebuffer into xrgb8888
     let orig_fb_xrgb_8888 = {
-        let mut fb = ORIG_FRAMEBUFFER_XRGB8888.lock();
+        let fb = &mut emu_fb.fb;
         if fb.len() != orig_width * orig_height * 4 {
             fb.resize(orig_width * orig_height * 4, 0);
         }
@@ -280,15 +295,30 @@ fn retro_video_refresh_shim_rs(
         fb
     };
 
-    let fb = UI_STATE.lock().fb.clone();
-    let mut fb = fb.lock();
+    drop(emu_fb);
 
-    // quick test that copies the original framebuffer into the larger one
-    let orig_rows = orig_fb_xrgb_8888.chunks_exact(orig_width * 4);
-    for (dst_row, src_row) in fb.chunks_mut(SCREEN_WIDTH * 4).skip(200).zip(orig_rows) {
-        dst_row[4 * 200..][..orig_width * 4].copy_from_slice(src_row)
+    // do a little locking + option take dance
+    let (done_tx, done_rx) = mpsc::channel();
+    let ui_send = {
+        let mut ui_state = UI_STATE.lock();
+        ui_state.ui_send.take()
+    };
+
+    ui_send
+        .as_ref()
+        .unwrap()
+        .send(UiMsg::UpdateUi(done_tx))
+        .unwrap();
+    {
+        let mut ui_state = UI_STATE.lock();
+        ui_state.ui_send = ui_send;
     }
 
+    done_rx.recv().unwrap();
+
+    // ok now dump this the final framebuffer
+    let ui_state = UI_STATE.lock();
+    let fb = ui_state.ui_fb.lock();
     unsafe {
         (LIBRETRO_CALLBACKS.lock().video.unwrap())(
             fb.as_ptr() as *const c_void,
@@ -410,7 +440,7 @@ fn retro_environment_shim_rs(
             let map = unsafe { data.into_mut::<retro_memory_map>() };
 
             let memory_map = memory_map::MemoryMap::from_retro_memory_map(map);
-            log::info!("intercepted env:SET_MEMORY_MAPS: {:#?}", memory_map);
+            log::info!("intercepted env:SET_MEMORY_MAPS: {:#x?}", memory_map);
             CORE_STATE.lock().memory_map = Some(memory_map);
 
             // pass things along...
@@ -556,31 +586,31 @@ fn retro_environment_shim_rs(
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn retro_run() {
+    // run underlying emulator first
     {
         let dylib = DYLIB.lock();
         let f: libloading::Symbol<'_, unsafe extern "C" fn() -> ()> =
             unsafe { dylib.get("retro_run".as_bytes()).unwrap() };
         unsafe { (f)() };
     }
-
-    let ui_state = UI_STATE.lock();
-    let (done_tx, done_rx) = mpsc::channel();
-    ui_state.ui_send.send(UiMsg::RetroRun(done_tx)).unwrap();
-    done_rx.recv().unwrap();
-
-    let core_state = CORE_STATE.lock();
-
-    let bg3vofs = core_state
-        .memory_map
-        .as_ref()
-        .unwrap()
-        .read_u16(0x400001E)
-        .unwrap();
-    log::warn!("BG3VOFS: {}", bg3vofs);
 }
 
 enum UiMsg {
-    RetroRun(mpsc::Sender<()>),
+    UpdateUi(mpsc::Sender<()>),
+}
+
+fn get_libretro_pointer_info() -> (f32, f32, bool) {
+    let input_cb = LIBRETRO_CALLBACKS.lock().input.unwrap();
+    let input_cb = |id| unsafe { (input_cb)(0, sys::RETRO_DEVICE_POINTER, 0, id) };
+
+    let pointer_x = input_cb(RETRO_DEVICE_ID_POINTER_X);
+    let pointer_y = input_cb(RETRO_DEVICE_ID_POINTER_Y);
+    let pointer_pressed = input_cb(RETRO_DEVICE_ID_POINTER_PRESSED);
+
+    let normalized_x = ((pointer_x as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.);
+    let normalized_y = ((pointer_y as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.);
+
+    (normalized_x, normalized_y, pointer_pressed == 1)
 }
 
 fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
@@ -591,7 +621,6 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
         None,
     );
 
-    let RasterizeOptions { pixels_per_point } = None.unwrap_or_default();
     let mut backend = EguiSkia::new();
     let mut surface =
         Surface::new_raster(&image_info, SCREEN_WIDTH * 4, None).expect("Failed to create surface");
@@ -605,67 +634,42 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
     loop {
         let msg = recv.recv().expect("sender won't go away");
         match msg {
-            UiMsg::RetroRun(done) => {
-                let pointer_x = unsafe {
-                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
-                        0,
-                        sys::RETRO_DEVICE_POINTER,
-                        0,
-                        RETRO_DEVICE_ID_POINTER_X,
-                    )
+            UiMsg::UpdateUi(done) => {
+                let events = {
+                    let mut events = Vec::new();
+
+                    let (pointer_x, pointer_y, pointer_pressed) = get_libretro_pointer_info();
+                    let pointer_pos = egui::pos2(
+                        pointer_x * SCREEN_WIDTH as f32,
+                        pointer_y * SCREEN_HEIGHT as f32,
+                    );
+
+                    if pointer_pos != last_pointer_pos {
+                        last_pointer_pos = pointer_pos;
+                        log::info!("pointer_pos: {:?}", pointer_pos);
+                        events.push(egui::Event::PointerMoved(pointer_pos));
+                    }
+
+                    let pointer_pressed = pointer_pressed;
+                    if pointer_pressed != last_pointer_pressed {
+                        last_pointer_pressed = pointer_pressed;
+                        log::info!("pointer_pressed: {}", pointer_pressed);
+                        events.push(egui::Event::PointerButton {
+                            pos: pointer_pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: pointer_pressed,
+                            modifiers: egui::Modifiers {
+                                alt: false,
+                                ctrl: false,
+                                shift: false,
+                                mac_cmd: false,
+                                command: false,
+                            },
+                        })
+                    }
+
+                    events
                 };
-                let pointer_y = unsafe {
-                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
-                        0,
-                        sys::RETRO_DEVICE_POINTER,
-                        0,
-                        RETRO_DEVICE_ID_POINTER_Y,
-                    )
-                };
-                let pointer_pressed = unsafe {
-                    (LIBRETRO_CALLBACKS.lock().input.unwrap())(
-                        0,
-                        sys::RETRO_DEVICE_POINTER,
-                        0,
-                        RETRO_DEVICE_ID_POINTER_PRESSED,
-                    )
-                };
-
-                let normalized_x = ((pointer_x as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.)
-                    * SCREEN_WIDTH as f32;
-                let normalized_y = ((pointer_y as i32 + 0x7fff) as f32) / (0x7fff as f32 * 2.)
-                    * SCREEN_HEIGHT as f32;
-                let pointer_pos = egui::pos2(normalized_x, normalized_y);
-
-                let mut events = Vec::new();
-
-                if pointer_pos != last_pointer_pos {
-                    last_pointer_pos = pointer_pos;
-
-                    log::info!("pointer_pos: {:?}", pointer_pos);
-
-                    events.push(egui::Event::PointerMoved(pointer_pos));
-                }
-
-                let pointer_pressed = pointer_pressed == 1;
-                if pointer_pressed != last_pointer_pressed {
-                    last_pointer_pressed = pointer_pressed;
-
-                    log::info!("pointer_pressed: {}", pointer_pressed);
-
-                    events.push(egui::Event::PointerButton {
-                        pos: pointer_pos,
-                        button: egui::PointerButton::Primary,
-                        pressed: pointer_pressed,
-                        modifiers: egui::Modifiers {
-                            alt: false,
-                            ctrl: false,
-                            shift: false,
-                            mac_cmd: false,
-                            command: false,
-                        },
-                    })
-                }
 
                 let input = egui::RawInput {
                     screen_rect: Some(
@@ -675,7 +679,7 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                         ]
                         .into(),
                     ),
-                    pixels_per_point: Some(pixels_per_point),
+                    pixels_per_point: Some(1.),
                     events,
                     ..Default::default()
                 };
@@ -684,13 +688,50 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                 let (_paint_duration, _platform_output) = backend.run(input, |ctx| {
                     demo.ui(ctx);
 
-                    frame += 1;
+                    // wide shenanigans
+                    {
+                        let core_state = CORE_STATE.lock();
+                        let emu_fb = EMU_FB.lock();
+
+                        let memory_map = core_state.memory_map.as_ref().unwrap();
+                        let bg3hofs = memory_map.read_u16(0x400001C).unwrap();
+                        let bg3vofs = memory_map.read_u16(0x400001E).unwrap();
+                        // log::debug!("BG3HOFS/BG4VOFS: {}x{}", bg3hofs, bg3vofs);
+
+                        let texture = ctx.load_texture(
+                            "my-image",
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [emu_fb.width, emu_fb.height],
+                                &emu_fb.fb,
+                            ),
+                            egui::TextureFilter::Nearest,
+                        );
+
+                        const EMULATOR_SCALE: f32 = 2.;
+
+                        // sketch code: have the background layer stay fixed in
+                        // place relative to the outer window
+
+                        egui::Area::new("emulator")
+                            .fixed_pos((
+                                (bg3hofs as f32).mul_add(EMULATOR_SCALE, 0.),
+                                (bg3vofs as f32).mul_add(EMULATOR_SCALE, 0.),
+                            ))
+                            .show(ctx, |ui| {
+                                ui.image(
+                                    &texture,
+                                    texture.size_vec2() * egui::Vec2::splat(EMULATOR_SCALE),
+                                );
+                            });
+                    }
 
                     egui::Window::new("Draw to skia").show(ctx, |ui| {
                         ScrollArea::horizontal().show(ui, |ui| {
                             let (rect, _) = ui
                                 .allocate_exact_size(egui::Vec2::splat(300.0), egui::Sense::drag());
                             ctx.request_repaint();
+
+                            frame += 1;
                             let si = (frame as f32 / 120.0).sin();
 
                             ui.painter().add(egui::PaintCallback {
