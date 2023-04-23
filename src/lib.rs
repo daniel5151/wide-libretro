@@ -67,9 +67,10 @@ static DYLIB: Lazy<Mutex<libloading::Library>> = Lazy::new(|| {
         }
     }
 
-    let path_to_core = std::env::var("SHIM_CORE").expect("did not find SHIM_CORE");
+    let path_to_core = std::env::var("SHIM_CORE").expect("SHIM_CORE env var wasn't set");
     let library = unsafe {
-        libloading::Library::new(path_to_core).expect("could not load core specified by SHIM_CORE")
+        libloading::Library::new(&path_to_core)
+            .unwrap_or_else(|e| panic!("could not load {}: {:?}", path_to_core, e))
     };
     Mutex::new(library)
 });
@@ -244,7 +245,7 @@ unsafe extern "C" fn retro_video_refresh_shim(
     let orig_fb = unsafe {
         std::slice::from_raw_parts(
             orig_data as *const u16,
-            (orig_pitch / std::mem::size_of::<u16>()) as usize * orig_height as usize,
+            (orig_pitch / std::mem::size_of::<u16>()) * orig_height as usize,
         )
     };
 
@@ -252,7 +253,7 @@ unsafe extern "C" fn retro_video_refresh_shim(
         orig_fb,
         orig_width as usize,
         orig_height as usize,
-        orig_pitch as usize,
+        orig_pitch,
     );
 }
 
@@ -387,7 +388,7 @@ mod env_ffi_helpers {
         ) -> Result<Option<&T>, UnsupportedEnvCmd> {
             let is_supported = unsafe { (self.0)(data.0, data.1) };
             is_supported
-                .then(|| unsafe { (data.1 as *mut T).as_ref() })
+                .then_some(unsafe { (data.1 as *mut T).as_ref() })
                 .ok_or(UnsupportedEnvCmd)
         }
 
@@ -405,13 +406,13 @@ mod env_ffi_helpers {
                 None => std::ptr::null_mut(),
             };
             let is_supported = unsafe { (self.0)(cmd, ptr) };
-            is_supported.then(|| ()).ok_or(UnsupportedEnvCmd)
+            is_supported.then_some(()).ok_or(UnsupportedEnvCmd)
         }
 
         pub fn passthrough(&self, data: EnvCallbackArgs) -> Result<(), UnsupportedEnvCmd> {
             // SAFETY: using original data + cmd provided by underlying core
             let is_supported = unsafe { (self.0)(data.0, data.1) };
-            is_supported.then(|| ()).ok_or(UnsupportedEnvCmd)
+            is_supported.then_some(()).ok_or(UnsupportedEnvCmd)
         }
     }
 }
@@ -625,7 +626,7 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
     let mut surface =
         Surface::new_raster(&image_info, SCREEN_WIDTH * 4, None).expect("Failed to create surface");
 
-    let mut demo = egui_demo_lib::DemoWindows::default();
+    // let mut demo = egui_demo_lib::DemoWindows::default();
 
     let mut last_pointer_pos = egui::pos2(0., 0.);
     let mut last_pointer_pressed = false;
@@ -686,7 +687,7 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
 
                 // TODO: actually use these return values
                 let (_paint_duration, _platform_output) = backend.run(input, |ctx| {
-                    demo.ui(ctx);
+                    // demo.ui(ctx);
 
                     // wide shenanigans
                     {
@@ -704,7 +705,7 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                                 [emu_fb.width, emu_fb.height],
                                 &emu_fb.fb,
                             ),
-                            egui::TextureFilter::Nearest,
+                            egui::TextureOptions::NEAREST,
                         );
 
                         const EMULATOR_SCALE: f32 = 2.;
@@ -766,7 +767,7 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                 });
 
                 surface.canvas().clear(Color::TRANSPARENT);
-                backend.paint(&mut surface);
+                backend.paint(surface.canvas());
 
                 let mut fb = fb.lock();
                 let ok = surface.image_snapshot().read_pixels(

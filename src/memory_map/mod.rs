@@ -36,7 +36,7 @@ impl MemoryDescriptor {
             } else {
                 unsafe {
                     Some(std::slice::from_raw_parts(
-                        (desc.ptr as *const u8).add(desc.offset as usize),
+                        (desc.ptr as *const u8).add(desc.offset),
                         desc.len,
                     ))
                 }
