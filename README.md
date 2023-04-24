@@ -13,7 +13,9 @@ For "v0" of wide-libretro, I'm targeting the GBA.
 
 ## Demo
 
-TODO upload video via github...
+(demo video doesn't include sound, but rest assured - sound does work)
+
+https://user-images.githubusercontent.com/2389445/233879491-47c2aac5-6877-4127-91f6-0c8867470d7b.mp4
 
 Still very early days... but a few notable things present in the demo:
 
