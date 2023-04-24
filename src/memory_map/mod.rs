@@ -77,11 +77,25 @@ impl MemoryMap {
         MemoryMap { descriptors }
     }
 
+    pub fn get_ram_region(&self, base_addr: usize) -> Option<&'static [u8]> {
+        // TODO: don't hardcode mGBA
+        match base_addr {
+            // palette
+            0x05000000 => self.descriptors[8].buf,
+            // vram
+            0x06000000 => self.descriptors[7].buf,
+            // oam
+            0x07000000 => self.descriptors[9].buf,
+            _ => None,
+        }
+    }
+
     pub fn read_u16(&self, addr: usize) -> Option<u16> {
+        // TODO: don't hardcode GBA
         assert!((0x4000000..=0x4000400).contains(&addr));
         let addr = addr - 0x4000000;
-        // TODO: actually respect addr lol
         Some(u16::from_le_bytes(
+            // TODO: don't hardcode mGBA
             self.descriptors[10].buf.unwrap()[addr..][..2]
                 .try_into()
                 .unwrap(),

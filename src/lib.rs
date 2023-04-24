@@ -6,6 +6,7 @@ use egui_skia::EguiSkia;
 use egui_skia::EguiSkiaPaintCallback;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+use rustboyadvance_ppu_standalone::GbaPpu;
 use skia_safe::Color;
 use skia_safe::Font;
 use skia_safe::PathEffect;
@@ -14,6 +15,7 @@ use std::ffi::c_void;
 use std::sync::mpsc;
 use std::sync::Arc;
 use sys::*;
+use zerocopy::AsBytes;
 
 #[allow(non_upper_case_globals, non_camel_case_types, dead_code)]
 mod sys;
@@ -587,12 +589,75 @@ fn retro_environment_shim_rs(
 #[allow(clippy::missing_safety_doc)]
 #[no_mangle]
 pub unsafe extern "C" fn retro_run() {
-    // run underlying emulator first
+    // install emulator specific instrumentation hook
+    // FIXME: should only do this once
+    {
+        #[allow(non_camel_case_types)]
+        pub type wide_libretro_hook_cb =
+            Option<unsafe extern "C" fn(evt: i32, data: *const c_void)>;
+
+        let dylib = DYLIB.lock();
+        let f: libloading::Symbol<'_, unsafe extern "C" fn(wide_libretro_hook_cb)> =
+            unsafe { dylib.get("wide_libretro_install_hook".as_bytes()).unwrap() };
+        unsafe { (f)(Some(wide_libretro_hook_cb)) }
+    }
+
+    // run underlying emulator
     {
         let dylib = DYLIB.lock();
         let f: libloading::Symbol<'_, unsafe extern "C" fn() -> ()> =
             unsafe { dylib.get("retro_run".as_bytes()).unwrap() };
         unsafe { (f)() };
+    }
+}
+
+static GBA_PPU: Lazy<Mutex<GbaPpu>> = Lazy::new(|| {
+    let core_state = CORE_STATE.lock();
+    let memory_map = core_state
+        .memory_map
+        .as_ref()
+        .expect("PPU initialized before memory map intercepted");
+
+    let palette_ram = memory_map.get_ram_region(0x05000000).unwrap();
+    let vram = memory_map.get_ram_region(0x06000000).unwrap();
+    let oam = memory_map.get_ram_region(0x07000000).unwrap();
+
+    Mutex::new(GbaPpu::new(palette_ram, vram, oam))
+});
+
+unsafe extern "C" fn wide_libretro_hook_cb(evt: i32, data: *const c_void) {
+    const WIDE_LIBRETRO_HOOK_GBA_HDRAW_END: i32 = 0; // data = NULL
+    const WIDE_LIBRETRO_HOOK_GBA_HBLANK_END: i32 = 1; // data = NULL
+    const WIDE_LIBRETRO_HOOK_GBA_VBLANK_HDRAW_END: i32 = 2; // data = NULL
+    const WIDE_LIBRETRO_HOOK_GBA_VBLANK_HBLANK_END: i32 = 3; // data = NULL
+    const WIDE_LIBRETRO_HOOK_REGISTER_WRITE: i32 = 4; // data = WideLibretroRegisterWrite
+
+    #[derive(Debug)]
+    #[repr(C)]
+    struct WideLibretroRegisterWrite {
+        pub addr: u32,
+        pub val: u32,
+        pub addr_len: u8,
+        pub val_len: u8,
+        _pad: u16,
+    }
+
+    let mut gpu = GBA_PPU.lock();
+
+    match evt {
+        WIDE_LIBRETRO_HOOK_GBA_HDRAW_END => gpu.handle_hdraw_end(),
+        WIDE_LIBRETRO_HOOK_GBA_HBLANK_END => gpu.handle_hblank_end(),
+        WIDE_LIBRETRO_HOOK_GBA_VBLANK_HDRAW_END => gpu.handle_vblank_hdraw_end(),
+        WIDE_LIBRETRO_HOOK_GBA_VBLANK_HBLANK_END => gpu.handle_vblank_hblank_end(),
+        WIDE_LIBRETRO_HOOK_REGISTER_WRITE => {
+            let data = unsafe { data.cast::<WideLibretroRegisterWrite>().as_ref().unwrap() };
+
+            assert_eq!(data.addr_len, 4);
+            assert_eq!(data.val_len, 2);
+
+            gpu.register_write(data.addr, data.val as u16);
+        }
+        _ => log::error!("unknown wide_libretro_hook_cb event: {}", evt),
     }
 }
 
@@ -699,11 +764,20 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                         let bg3vofs = memory_map.read_u16(0x400001E).unwrap();
                         // log::debug!("BG3HOFS/BG4VOFS: {}x{}", bg3hofs, bg3vofs);
 
-                        let texture = ctx.load_texture(
-                            "my-image",
+                        let orig_texture = ctx.load_texture(
+                            "orig-tex",
                             egui::ColorImage::from_rgba_unmultiplied(
                                 [emu_fb.width, emu_fb.height],
                                 &emu_fb.fb,
+                            ),
+                            egui::TextureOptions::NEAREST,
+                        );
+
+                        let gba_ppu_texture = ctx.load_texture(
+                            "gba-ppu-tex",
+                            egui::ColorImage::from_rgba_unmultiplied(
+                                [240, 160],
+                                GBA_PPU.lock().get_frame_buffer().as_bytes(),
                             ),
                             egui::TextureOptions::NEAREST,
                         );
@@ -713,15 +787,27 @@ fn ui_thread(fb: Arc<Mutex<Vec<u8>>>, recv: mpsc::Receiver<UiMsg>) {
                         // sketch code: have the background layer stay fixed in
                         // place relative to the outer window
 
-                        egui::Area::new("emulator")
+                        egui::Area::new("orig")
                             .fixed_pos((
                                 (bg3hofs as f32).mul_add(EMULATOR_SCALE, 0.),
                                 (bg3vofs as f32).mul_add(EMULATOR_SCALE, 0.),
                             ))
                             .show(ctx, |ui| {
                                 ui.image(
-                                    &texture,
-                                    texture.size_vec2() * egui::Vec2::splat(EMULATOR_SCALE),
+                                    &orig_texture,
+                                    orig_texture.size_vec2() * egui::Vec2::splat(EMULATOR_SCALE),
+                                );
+                            });
+
+                        egui::Area::new("gba-ppu")
+                            .fixed_pos((
+                                (bg3hofs as f32 + 257.).mul_add(EMULATOR_SCALE, 0.),
+                                (bg3vofs as f32).mul_add(EMULATOR_SCALE, 0.),
+                            ))
+                            .show(ctx, |ui| {
+                                ui.image(
+                                    &gba_ppu_texture,
+                                    gba_ppu_texture.size_vec2() * egui::Vec2::splat(EMULATOR_SCALE),
                                 );
                             });
                     }
